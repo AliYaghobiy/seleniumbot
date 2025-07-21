@@ -7,6 +7,7 @@ import logging
 import random
 import platform
 import subprocess
+import re
 from typing import List, Dict, Optional
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -16,14 +17,13 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
-from webdriver_manager.chrome import ChromeDriverManager
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 import sys
 import os
 
 class ProductScraper:
     """
-    ربات اسکرپینگ محصولات با استفاده از سلنیوم
+    ربات اسکرپینگ محصولات با استفاده از سلنیوم - نسخه بهینه‌شده
     """
     
     def __init__(self, config_path: str = "config.json"):
@@ -75,8 +75,8 @@ class ProductScraper:
             '/usr/bin/chromium-browser',
             '/usr/bin/chromium',
             '/snap/bin/chromium',
-            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',  # macOS
-            'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',    # Windows
+            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+            'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
             'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe'
         ]
         
@@ -85,7 +85,6 @@ class ProductScraper:
                 self.logger.info(f"✅ Chrome یافت شد در: {path}")
                 return path
                 
-        # تلاش برای یافتن با which
         try:
             result = subprocess.run(['which', 'google-chrome'], capture_output=True, text=True)
             if result.returncode == 0:
@@ -118,55 +117,85 @@ class ProductScraper:
         print("\n📋 یا برای نصب Chromium:")
         print("sudo apt-get install chromium-browser")
 
-    def human_like_delay(self, min_seconds=1, max_seconds=3):
+    def human_like_delay(self, min_seconds=0.5, max_seconds=1.5):
         """
-        تاخیر تصادفی برای شبیه‌سازی رفتار انسانی
+        تاخیر تصادفی بهینه‌شده برای سرعت بیشتر
         """
         delay = random.uniform(min_seconds, max_seconds)
         time.sleep(delay)
         
     def human_like_scroll(self, pause_time=None):
         """
-        اسکرول طبیعی مانند انسان
+        اسکرول طبیعی مانند انسان برای اطمینان از لود کامل محصولات
         """
         if pause_time is None:
             pause_time = random.uniform(0.5, 1.5)
             
-        # اسکرول تدریجی به جای یکباره
         current_scroll = self.driver.execute_script("return window.pageYOffset;")
         total_height = self.driver.execute_script("return document.body.scrollHeight;")
         
-        # اسکرول به صورت تدریجی
         scroll_steps = random.randint(3, 6)
         step_height = (total_height - current_scroll) / scroll_steps
         
         for i in range(scroll_steps):
             scroll_to = current_scroll + (step_height * (i + 1))
             self.driver.execute_script(f"window.scrollTo(0, {scroll_to});")
+            WebDriverWait(self.driver, 5).until(
+                lambda d: d.execute_script("return document.readyState") == "complete"
+            )
             time.sleep(random.uniform(0.3, 0.8))
             
         time.sleep(pause_time)
         
-    def simulate_mouse_movement(self, element):
+    def simulate_quick_mouse_movement(self, element):
         """
-        شبیه‌سازی حرکت موس طبیعی
+        شبیه‌سازی سریع حرکت موس
         """
         try:
             actions = ActionChains(self.driver)
-            
-            # حرکت تصادفی موس قبل از کلیک
-            actions.move_by_offset(random.randint(-50, 50), random.randint(-30, 30))
-            actions.pause(random.uniform(0.1, 0.3))
-            
-            # حرکت به سمت المان
             actions.move_to_element(element)
-            actions.pause(random.uniform(0.2, 0.5))
-            
+            actions.pause(random.uniform(0.1, 0.2))
             actions.perform()
         except Exception as e:
             self.logger.warning(f"⚠️ خطا در شبیه‌سازی حرکت موس: {e}")
             
+    def load_random_user_agents(self, file_path: str = "random.txt") -> List[str]:
+        """
+        بارگذاری User-Agent های تصادفی از فایل
+        """
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                user_agents = [line.strip() for line in f.readlines() if line.strip()]
+            if user_agents:
+                self.logger.info(f"✅ {len(user_agents)} User-Agent از فایل {file_path} بارگذاری شد")
+                return user_agents
+            else:
+                self.logger.warning(f"⚠️ فایل {file_path} خالی است")
+                return []
+        except FileNotFoundError:
+            self.logger.warning(f"⚠️ فایل {file_path} یافت نشد")
+            return []
+        except Exception as e:
+            self.logger.error(f"❌ خطا در بارگذاری User-Agent ها: {e}")
+            return []
+
+    def get_random_user_agent(self) -> str:
+        """
+        انتخاب تصادفی User-Agent
+        """
+        user_agents = self.load_random_user_agents()
+        if user_agents:
+            selected_ua = random.choice(user_agents)
+            self.logger.info(f"🎲 User-Agent تصادفی انتخاب شد: {selected_ua[:50]}...")
+            return selected_ua
+        default_ua = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
+        self.logger.info(f"🔄 استفاده از User-Agent پیش‌فرض")
+        return default_ua
+
     def setup_driver(self):
+        """
+        راه‌اندازی مرورگر با تنظیمات بهینه
+        """
         try:
             chrome_options = Options()
             system_name = platform.system().lower()
@@ -180,19 +209,21 @@ class ProductScraper:
                 self.install_chrome_ubuntu()
                 sys.exit(1)
             
-            # تنظیمات برای سرور
-            #chrome_options.add_argument('--headless=new')
             chrome_options.add_argument('--disable-gpu')
             chrome_options.add_argument('--no-sandbox')
             chrome_options.add_argument('--disable-dev-shm-usage')
-            
-            # سایر تنظیمات
+            chrome_options.add_argument('--disable-images')
+            chrome_options.add_argument('--disable-css-background-images')
+            chrome_options.add_argument('--disable-extensions')
+            chrome_options.add_argument('--disable-plugins')
             chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-            chrome_options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36')
+            
+            random_user_agent = self.get_random_user_agent()
+            chrome_options.add_argument(f'--user-agent={random_user_agent}')
+            
             chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
             chrome_options.add_experimental_option('useAutomationExtension', False)
             
-            # تنظیم پورت ثابت
             chromedriver_path = '/usr/bin/chromedriver'
             if os.path.exists(chromedriver_path):
                 self.logger.info(f"✅ استفاده از chromedriver سیستم: {chromedriver_path}")
@@ -201,12 +232,9 @@ class ProductScraper:
                 self.logger.error("❌ chromedriver یافت نشد")
                 sys.exit(1)
             
-            # ایجاد webdriver
             self.driver = webdriver.Chrome(service=service, options=chrome_options)
-            
-            # اسکریپت‌های ضد تشخیص
             self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            self.driver.implicitly_wait(10)
+            self.driver.implicitly_wait(5)
             self.driver.maximize_window()
             self.logger.info("✅ مرورگر کروم با موفقیت راه‌اندازی شد")
             
@@ -214,7 +242,6 @@ class ProductScraper:
             self.logger.error(f"❌ خطا در راه‌اندازی مرورگر: {e}")
             sys.exit(1)
    
-            
     def scroll_page(self, scroll_count: int):
         """
         اسکرول طبیعی صفحه برای بارگذاری محصولات بیشتر
@@ -223,149 +250,217 @@ class ProductScraper:
         
         for i in range(scroll_count):
             self.logger.info(f"📜 اسکرول {i+1} از {scroll_count}")
-            
-            # اسکرول طبیعی
             self.human_like_scroll()
-            
-            # تاخیر تصادفی بین اسکرول‌ها
             self.human_like_delay(1.5, 3.5)
-            
-            # گاهی اوقات اسکرول کمی به بالا (رفتار طبیعی کاربر)
-            if random.random() < 0.3:  # 30% احتمال
+            if random.random() < 0.3:
                 self.driver.execute_script("window.scrollBy(0, -100);")
                 time.sleep(random.uniform(0.5, 1.0))
-            
-        # بازگشت تدریجی به بالای صفحه
+        
         self.driver.execute_script("window.scrollTo({top: 0, behavior: 'smooth'});")
         self.human_like_delay(2, 3)
         
     def extract_product_links(self) -> List[str]:
         """
-        استخراج لینک‌های محصولات از صفحه اصلی با رفتار طبیعی
+        استخراج لینک‌های محصولات با انتظار لود کامل
         """
         self.logger.info("🔍 شروع استخراج لینک‌های محصولات...")
         
         try:
-            # بارگذاری صفحه اصلی
             self.driver.get(self.config['main_page_url'])
+            WebDriverWait(self.driver, 10).until(
+                lambda d: d.execute_script("return document.readyState") == "complete"
+            )
+            self.human_like_delay(2, 3)
             
-            # تاخیر طبیعی برای بارگذاری صفحه
-            self.human_like_delay(3, 5)
-            
-            # شبیه‌سازی خواندن صفحه توسط کاربر
-            self.driver.execute_script("window.scrollTo(0, 200);")
-            self.human_like_delay(1, 2)
-            self.driver.execute_script("window.scrollTo(0, 0);")
-            self.human_like_delay(1, 1.5)
-            
-            # اسکرول برای بارگذاری تمام محصولات
             scroll_count = self.config.get('scroll_count', 0)
             if scroll_count > 0:
                 self.scroll_page(scroll_count)
             
-            # استخراج لینک‌های محصولات
+            WebDriverWait(self.driver, 10).until(
+                EC.presence_of_all_elements_located((By.CSS_SELECTOR, self.config['selectors']['product_links']))
+            )
+            
             product_selector = self.config['selectors']['product_links']
             product_elements = self.driver.find_elements(By.CSS_SELECTOR, product_selector)
             
             product_links = []
-            for i, element in enumerate(product_elements):
+            for element in product_elements:
                 try:
-                    # شبیه‌سازی حرکت موس روی المان (گاهی اوقات)
-                    if random.random() < 0.1:  # 10% احتمال
-                        self.simulate_mouse_movement(element)
-                        
                     href = element.get_attribute('href')
                     if href:
-                        # تبدیل لینک نسبی به مطلق
                         full_url = urljoin(self.config['main_page_url'], href)
                         if full_url not in product_links:
                             product_links.append(full_url)
-                            
-                    # تاخیر کوچک بین استخراج هر لینک
-                    if i % 10 == 0:  # هر 10 لینک
-                        time.sleep(random.uniform(0.1, 0.3))
-                        
-                except Exception as e:
-                    self.logger.warning(f"⚠️ خطا در استخراج لینک: {e}")
+                except Exception:
                     continue
-                    
+                
             self.logger.info(f"✅ تعداد {len(product_links)} لینک محصول استخراج شد")
             return product_links
             
         except Exception as e:
             self.logger.error(f"❌ خطا در استخراج لینک‌های محصولات: {e}")
             return []
+
+    def detect_brand_from_category(self, category_text: str) -> Optional[str]:
+        """
+        تشخیص برند از متن دسته‌بندی
+        """
+        pattern = r'(.+?)\s*\((.+?)\)'
+        match = re.match(pattern, category_text.strip())
+        if match:
+            brand_persian = match.group(1).strip()
+            brand_english = match.group(2).strip()
+            self.logger.info(f"🏷️ برند تشخیص داده شد: {brand_persian} ({brand_english})")
+            return f"{brand_persian} ({brand_english})"
+        return None
+
+    def extract_specifications(self, product_url: str) -> Dict:
+        """
+        استخراج مشخصات کلیدی و کلی محصول
+        """
+        specifications = {
+            'key_specs': [],
+            'general_specs': []
+        }
+        
+        try:
+            key_specs_selector = self.config['selectors']['specifications']['key_specs_section']
+            general_specs_selector = self.config['selectors']['specifications']['general_specs_section']
+            spec_items_selector = self.config['selectors']['specifications']['spec_items']
+            spec_title_selector = self.config['selectors']['specifications']['spec_title']
+            spec_value_selector = self.config['selectors']['specifications']['spec_value']
+            
+            try:
+                spec_elements = WebDriverWait(self.driver, 5).until(
+                    EC.presence_of_all_elements_located((By.CSS_SELECTOR, spec_items_selector))
+                )
+                for element in spec_elements:
+                    try:
+                        title = element.find_element(By.CSS_SELECTOR, spec_title_selector).text.strip()
+                        value = element.find_element(By.CSS_SELECTOR, spec_value_selector).text.strip()
+                        if title and value:
+                            if key_specs_selector in element.get_attribute('class') or 'key' in element.get_attribute('class').lower():
+                                specifications['key_specs'].append({
+                                    'title': title,
+                                    'body': value
+                                })
+                            else:
+                                specifications['general_specs'].append({
+                                    'title': title,
+                                    'body': value
+                                })
+                    except Exception:
+                        continue
+            except TimeoutException:
+                self.logger.warning("⚠️ هیچ مشخصه‌ای با سلکتورهای اصلی پیدا نشد")
+                self.extract_specs_alternative_method(specifications)
+                
+        except Exception as e:
+            self.logger.warning(f"⚠️ خطا در استخراج مشخصات: {e}")
+        
+        return specifications
+
+    def extract_specs_alternative_method(self, specifications: Dict):
+        """
+        روش جایگزین برای استخراج مشخصات
+        """
+        try:
+            all_elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'مشخصات')]")
+            for element in all_elements:
+                try:
+                    parent = element.find_element(By.XPATH, './..')
+                    spec_items = parent.find_elements(By.XPATH, './/*')
+                    for item in spec_items:
+                        try:
+                            text = item.text.strip()
+                            if text and '\n' in text:
+                                lines = text.split('\n')
+                                if len(lines) >= 2:
+                                    title = lines[0].strip()
+                                    body = lines[1].strip()
+                                    if title and body and len(title) < 100 and len(body) < 200:
+                                        if any(keyword in title.lower() for keyword in ['حافظه', 'باتری', 'دوربین', 'سیم']):
+                                            specifications['key_specs'].append({
+                                                'title': title,
+                                                'body': body
+                                            })
+                                        else:
+                                            specifications['general_specs'].append({
+                                                'title': title,
+                                                'body': body
+                                            })
+                        except Exception:
+                            continue
+                except Exception:
+                    continue
+        except Exception as e:
+            self.logger.warning(f"⚠️ خطا در روش جایگزین استخراج مشخصات: {e}")
             
     def extract_product_data(self, product_url: str) -> Optional[Dict]:
         """
-        استخراج اطلاعات محصول از صفحه محصول با رفتار انسانی
+        استخراج بهینه‌شده اطلاعات محصول
         """
         try:
             self.logger.info(f"📊 استخراج اطلاعات محصول: {product_url}")
-            
-            # بارگذاری صفحه محصول
             self.driver.get(product_url)
-            
-            # تاخیر طبیعی برای بارگذاری صفحه
-            self.human_like_delay(2, 4)
-            
-            # شبیه‌سازی خواندن صفحه محصول
-            self.driver.execute_script("window.scrollTo(0, 300);")
-            self.human_like_delay(1, 2)
-            
-            # گاهی اوقات اسکرول بیشتر برای دیدن جزئیات
-            if random.random() < 0.4:  # 40% احتمال
-                self.driver.execute_script("window.scrollTo(0, 600);")
-                self.human_like_delay(1, 1.5)
-                self.driver.execute_script("window.scrollTo(0, 100);")
-                self.human_like_delay(0.5, 1)
+            self.human_like_delay(1.5, 2.5)
+            self.driver.execute_script("window.scrollTo(0, 500);")
+            self.human_like_delay(0.5, 1)
             
             product_data = {
                 'url': product_url,
                 'title': None,
-                'categories': []
+                'categories': [],
+                'brand': None,
+                'specifications': {
+                    'key_specs': [],
+                    'general_specs': []
+                }
             }
             
-            # استخراج عنوان محصول
             try:
-                title_element = WebDriverWait(self.driver, 8).until(
+                title_element = WebDriverWait(self.driver, 6).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, self.config['selectors']['product_title']))
                 )
-                
-                # شبیه‌سازی نگاه به عنوان
-                self.simulate_mouse_movement(title_element)
-                time.sleep(random.uniform(0.3, 0.7))
-                
                 product_data['title'] = title_element.text.strip()
                 self.logger.info(f"📝 عنوان محصول: {product_data['title']}")
             except TimeoutException:
                 self.logger.warning(f"⚠️ عنوان محصول یافت نشد: {product_url}")
                 
-            # استخراج دسته‌بندی‌ها
             categories_selectors = self.config['selectors']['categories']
+            categories_found = []
             for i, selector in enumerate(categories_selectors):
                 try:
                     category_element = self.driver.find_element(By.CSS_SELECTOR, selector)
                     category_text = category_element.text.strip()
                     if category_text:
-                        product_data['categories'].append({
+                        categories_found.append({
                             'level': i + 1,
                             'name': category_text
                         })
                         self.logger.info(f"🏷️ دسته‌بندی {i+1}: {category_text}")
-                        
-                        # تاخیر کوچک بین استخراج دسته‌بندی‌ها
-                        time.sleep(random.uniform(0.1, 0.3))
-                        
                 except NoSuchElementException:
-                    # اگر دسته‌بندی وجود نداشت، ادامه می‌دهیم
                     break
                 except Exception as e:
                     self.logger.warning(f"⚠️ خطا در استخراج دسته‌بندی {i+1}: {e}")
-                    
-            # تاخیر کوتاه قبل از رفتن به محصول بعدی
-            self.human_like_delay(0.5, 1.5)
-                    
+            
+            if categories_found:
+                last_category = categories_found[-1]
+                brand = self.detect_brand_from_category(last_category['name'])
+                if brand:
+                    product_data['brand'] = brand
+                    product_data['categories'] = categories_found[:-1]
+                    self.logger.info(f"🏷️ برند استخراج شد: {brand}")
+                else:
+                    product_data['categories'] = categories_found
+            
+            self.logger.info("🔍 شروع استخراج مشخصات...")
+            specifications = self.extract_specifications(product_url)
+            product_data['specifications'] = specifications
+            self.logger.info(f"✅ تعداد مشخصات کلیدی: {len(specifications['key_specs'])}")
+            self.logger.info(f"✅ تعداد مشخصات کلی: {len(specifications['general_specs'])}")
+            
+            self.human_like_delay(0.3, 0.8)
             return product_data
             
         except Exception as e:
@@ -380,19 +475,23 @@ class ProductScraper:
         filename = output_config.get('filename', 'scraped_products.json')
         
         try:
-            # ذخیره در فرمت JSON
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(self.scraped_products, f, ensure_ascii=False, indent=2)
                 
             self.logger.info(f"💾 اطلاعات در فایل {filename} ذخیره شد")
             
-            # نمایش آمار
             total_products = len(self.scraped_products)
             successful_products = len([p for p in self.scraped_products if p.get('title')])
+            products_with_brand = len([p for p in self.scraped_products if p.get('brand')])
+            products_with_key_specs = len([p for p in self.scraped_products if p.get('specifications', {}).get('key_specs')])
+            products_with_general_specs = len([p for p in self.scraped_products if p.get('specifications', {}).get('general_specs')])
             
             print(f"\n📈 آمار نهایی:")
             print(f"🔢 تعداد کل محصولات: {total_products}")
             print(f"✅ محصولات موفق: {successful_products}")
+            print(f"🏷️ محصولات با برند: {products_with_brand}")
+            print(f"🔧 محصولات با مشخصات کلیدی: {products_with_key_specs}")
+            print(f"📋 محصولات با مشخصات کلی: {products_with_general_specs}")
             print(f"❌ محصولات ناموفق: {total_products - successful_products}")
             
         except Exception as e:
@@ -403,36 +502,26 @@ class ProductScraper:
         اجرای اصلی ربات
         """
         try:
-            print("🤖 شروع اجرای ربات اسکرپینگ...")
-            
-            # راه‌اندازی مرورگر
+            print("🚀 شروع اجرای ربات اسکرپینگ بهینه‌شده...")
             self.setup_driver()
-            
-            # استخراج لینک‌های محصولات
             product_links = self.extract_product_links()
             
             if not product_links:
                 self.logger.error("❌ هیچ لینک محصولی یافت نشد")
                 return
                 
-            # استخراج اطلاعات هر محصول
             total_products = len(product_links)
             for i, product_url in enumerate(product_links, 1):
                 print(f"\n🔄 پردازش محصول {i} از {total_products}")
-                
                 product_data = self.extract_product_data(product_url)
                 if product_data:
                     self.scraped_products.append(product_data)
-                    
-                # تاخیر تصادفی بین محصولات (رفتار طبیعی)
                 if i < total_products:
-                    delay = random.uniform(2, 6)  # تاخیر بین 2 تا 6 ثانیه
+                    delay = random.uniform(1, 3)
                     self.logger.info(f"⏱️ انتظار {delay:.1f} ثانیه قبل از محصول بعدی...")
                     time.sleep(delay)
                     
-            # ذخیره اطلاعات
             self.save_data()
-            
             print("\n🎉 ربات با موفقیت کار خود را تمام کرد!")
             
         except KeyboardInterrupt:
@@ -455,17 +544,15 @@ def main():
     تابع اصلی برنامه
     """
     print("=" * 60)
-    print("🤖 ربات اسکرپینگ محصولات با سلنیوم")
+    print("🚀 ربات اسکرپینگ محصولات بهینه‌شده")
     print("=" * 60)
     
-    # بررسی وجود فایل کانفیگ
     config_file = "config.json"
     if not os.path.exists(config_file):
         print(f"❌ فایل کانفیگ یافت نشد: {config_file}")
         print("لطفاً ابتدا فایل config.json را ایجاد کنید")
         return
         
-    # اجرای ربات
     scraper = ProductScraper(config_file)
     scraper.run()
 
