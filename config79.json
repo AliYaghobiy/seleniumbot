@@ -1,5 +1,5 @@
 {
-  "main_page_url": "https://torob.com/shop/148640/%D9%84%D9%88%D9%85%D9%88-%D8%B4%D8%A7%D9%BE/%D9%85%D8%AD%D8%B5%D9%88%D9%84%D8%A7%D8%AA/",
+  "main_page_url": "https://torob.com/shop/197117/%D9%82%D8%B3%D8%B7%DB%8C-%D8%AC%D8%A7%D9%86%D8%A8%DB%8C/%D9%85%D8%AD%D8%B5%D9%88%D9%84%D8%A7%D8%AA/",
   "selectors": {
     "product_links": ".ProductCards_cards__MYvdn > div > a",
     "product_title": ".Showcase_name__hrttI > h1:nth-child(1)",
@@ -41,7 +41,7 @@
     "cache_enabled": true
   },
   "output": {
-    "filename": "/var/www/torob_bot/storage/app/1738504599.json",
+    "filename": "/var/www/torob_bot/storage/app/1738504582.json",
     "format": "json"
   }
 } 

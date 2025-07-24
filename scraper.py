@@ -10,6 +10,7 @@ import subprocess
 import re
 import threading
 import queue
+from typing import List, Dict, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Optional
 from selenium import webdriver
@@ -24,6 +25,7 @@ from urllib.parse import urljoin
 import sys
 import os
 
+
 class ProductScraper:
     """
     ربات اسکرپینگ محصولات با استفاده از سلنیوم - نسخه بهینه‌شده
@@ -31,13 +33,256 @@ class ProductScraper:
     
     def __init__(self, config_path: str = "config.json"):
         """
-        راه‌اندازی ربات با بارگذاری کانفیگ
+        راه‌اندازی ربات با بارگذاری کانفیگ و تنظیمات Resume
         """
         self.config = self.load_config(config_path)
         self.driver = None
         self.scraped_products = []
-        self.tab_handles = []  # اضافه شده برای نگهداری handle های تب‌ها 
+        self.tab_handles = []
+        
+        # تنظیمات Resume
+        self.progress_file = "scraper_progress.json"
+        self.processed_urls = set()
+        self.failed_urls = set()
+        
         self.setup_logging()
+
+    def load_progress(self) -> Dict:
+        """
+        بارگذاری وضعیت قبلی کار
+        """
+        try:
+            if os.path.exists(self.progress_file):
+                with open(self.progress_file, 'r', encoding='utf-8') as f:
+                    progress_data = json.load(f)
+                
+                self.processed_urls = set(progress_data.get('processed_urls', []))
+                self.failed_urls = set(progress_data.get('failed_urls', []))
+                
+                # بارگذاری محصولات قبلی
+                if progress_data.get('scraped_products'):
+                    self.scraped_products = progress_data['scraped_products']
+                
+                self.logger.info(f"✅ وضعیت قبلی بارگذاری شد - پردازش شده: {len(self.processed_urls)}, ناموفق: {len(self.failed_urls)}")
+                return progress_data
+            else:
+                self.logger.info("🆕 شروع جدید - فایل progress یافت نشد")
+                return {}
+                
+        except Exception as e:
+            self.logger.error(f"❌ خطا در بارگذاری progress: {e}")
+            return {}
+    
+    def save_progress(self, all_product_links: List[str] = None):
+        """
+        ذخیره وضعیت فعلی کار
+        """
+        try:
+            progress_data = {
+                'processed_urls': list(self.processed_urls),
+                'failed_urls': list(self.failed_urls),
+                'scraped_products': self.scraped_products,
+                'total_found_products': len(all_product_links) if all_product_links else 0,
+                'timestamp': time.time()
+            }
+            
+            with open(self.progress_file, 'w', encoding='utf-8') as f:
+                json.dump(progress_data, f, ensure_ascii=False, indent=2)
+                
+            self.logger.info(f"💾 وضعیت ذخیره شد - پردازش شده: {len(self.processed_urls)}")
+            
+        except Exception as e:
+            self.logger.error(f"❌ خطا در ذخیره progress: {e}")
+    
+    def get_remaining_urls(self, all_product_links: List[str]) -> List[str]:
+        """
+        دریافت URLهای باقی‌مانده برای پردازش
+        """
+        remaining_urls = []
+        for url in all_product_links:
+            if url not in self.processed_urls and url not in self.failed_urls:
+                remaining_urls.append(url)
+        
+        self.logger.info(f"📋 تعداد محصولات باقی‌مانده: {len(remaining_urls)} از {len(all_product_links)}")
+        return remaining_urls
+    
+    def extract_product_data_with_progress(self, product_url: str) -> Optional[Dict]:
+        """
+        استخراج اطلاعات محصول با ذخیره خودکار progress
+        """
+        try:
+            product_data = self.extract_product_data(product_url)
+            
+            if product_data and product_data.get('title'):
+                self.processed_urls.add(product_url)
+                self.logger.info(f"✅ محصول موفق: {product_url}")
+                return product_data
+            else:
+                self.failed_urls.add(product_url)
+                self.logger.warning(f"❌ محصول ناموفق: {product_url}")
+                return None
+                
+        except Exception as e:
+            self.failed_urls.add(product_url)
+            self.logger.error(f"❌ خطا در استخراج {product_url}: {e}")
+            return None
+        finally:
+            # ذخیره progress بعد از هر محصول
+            self.save_progress()
+    
+    def cleanup_with_progress_save(self, all_product_links: List[str] = None):
+        """
+        تمیز کردن منابع با ذخیره نهایی progress
+        """
+        try:
+            # ذخیره نهایی progress
+            self.save_progress(all_product_links)
+            
+            # ذخیره نهایی محصولات
+            self.save_data()
+            
+        except Exception as e:
+            self.logger.error(f"❌ خطا در cleanup: {e}")
+        finally:
+            if self.driver:
+                self.driver.quit()
+                self.logger.info("🔒 مرورگر بسته شد")
+    
+    def show_resume_status(self, all_product_links: List[str]):
+        """
+        نمایش وضعیت Resume
+        """
+        total_products = len(all_product_links)
+        processed_count = len(self.processed_urls)
+        failed_count = len(self.failed_urls)
+        remaining_count = total_products - processed_count - failed_count
+        
+        if processed_count > 0 or failed_count > 0:
+            print(f"\n🔄 ادامه کار قبلی:")
+            print(f"   📊 تعداد کل محصولات: {total_products}")
+            print(f"   ✅ پردازش شده: {processed_count}")
+            print(f"   ❌ ناموفق: {failed_count}")
+            print(f"   🔄 باقی‌مانده: {remaining_count}")
+            print(f"   📈 پیشرفت: {((processed_count + failed_count) / total_products) * 100:.1f}%")
+        else:
+            print(f"\n🆕 شروع جدید - {total_products} محصول برای پردازش")
+    
+    def process_single_product_thread_with_progress(self, product_url: str, tab_handle: str, thread_id: int, results_queue):
+        """
+        پردازش محصول در thread با progress
+        """
+        try:
+            time.sleep(thread_id * 0.5)
+            self.driver.switch_to.window(tab_handle)
+            
+            self.logger.info(f"📊 Thread {thread_id}: شروع استخراج {product_url}")
+            product_data = self.extract_product_data_in_tab(product_url, tab_handle)
+            
+            # به‌روزرسانی وضعیت
+            if product_data and product_data.get('title'):
+                self.processed_urls.add(product_url)
+                success = True
+            else:
+                self.failed_urls.add(product_url)
+                success = False
+            
+            results_queue.put({
+                'thread_id': thread_id,
+                'product_data': product_data,
+                'success': success,
+                'url': product_url
+            })
+            
+            self.logger.info(f"✅ Thread {thread_id}: تکمیل شد")
+            
+        except Exception as e:
+            self.failed_urls.add(product_url)
+            self.logger.error(f"❌ Thread {thread_id} خطا: {e}")
+            results_queue.put({
+                'thread_id': thread_id,
+                'product_data': None,
+                'success': False,
+                'url': product_url
+            })
+    
+    def run_parallel_with_resume(self):
+        """
+        اجرای موازی با قابلیت Resume
+        """
+        try:
+            print("🚀 شروع اجرای ربات اسکرپینگ موازی با Resume...")
+            
+            # بارگذاری وضعیت قبلی
+            self.load_progress()
+            
+            # راه‌اندازی driver
+            self.setup_driver()
+            
+            # دریافت لینک محصولات
+            all_product_links = self.extract_product_links()
+            if not all_product_links:
+                self.logger.error("❌ هیچ لینک محصولی یافت نشد")
+                return
+            
+            # نمایش وضعیت Resume
+            self.show_resume_status(all_product_links)
+            
+            # دریافت محصولات باقی‌مانده
+            remaining_product_links = self.get_remaining_urls(all_product_links)
+            
+            if not remaining_product_links:
+                print("🎉 همه محصولات قبلاً پردازش شده‌اند!")
+                self.save_data()
+                return
+            
+            # ادامه پردازش موازی
+            num_tabs = 2
+            tab_handles = self.setup_multiple_tabs(num_tabs)
+            
+            for batch_start in range(0, len(remaining_product_links), num_tabs):
+                batch_end = min(batch_start + num_tabs, len(remaining_product_links))
+                current_batch = remaining_product_links[batch_start:batch_end]
+                
+                print(f"\n📦 پردازش batch: محصولات {batch_start + 1} تا {batch_end} از {len(remaining_product_links)} باقی‌مانده")
+                
+                results_queue = queue.Queue()
+                threads = []
+                
+                for i, product_url in enumerate(current_batch):
+                    if i < len(tab_handles):
+                        thread = threading.Thread(
+                            target=self.process_single_product_thread_with_progress,
+                            args=(product_url, tab_handles[i], i+1, results_queue)
+                        )
+                        thread.daemon = True
+                        thread.start()
+                        threads.append(thread)
+                
+                for thread in threads:
+                    thread.join()
+                
+                # جمع‌آوری نتایج
+                while not results_queue.empty():
+                    result = results_queue.get()
+                    if result['success'] and result['product_data']:
+                        self.scraped_products.append(result['product_data'])
+                
+                # ذخیره progress بعد از هر batch
+                self.save_progress(all_product_links)
+                
+                if batch_end < len(remaining_product_links):
+                    time.sleep(random.uniform(3, 5))
+            
+            print("\n🎉 تمام محصولات با موفقیت پردازش شدند!")
+            
+        except KeyboardInterrupt:
+            print(f"\n⏹️ ربات متوقف شد - وضعیت ذخیره شد")
+            self.logger.info("⏹️ ربات توسط کاربر متوقف شد")
+        except Exception as e:
+            self.logger.error(f"❌ خطای کلی: {e}")
+        finally:
+            self.cleanup_with_progress_save(all_product_links if 'all_product_links' in locals() else None)
+
         
     def setup_logging(self):
         """
@@ -882,7 +1127,8 @@ def main():
         return
         
     scraper = ProductScraper(config_file)
-    scraper.run_parallel()
+    scraper.run_parallel_with_resume()
 
 if __name__ == "__main__":
     main()
+    
