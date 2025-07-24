@@ -1,7 +1,19 @@
+# پوشه‌ها و فایل‌هایی که نباید ترک شوند
 page1/
+torob/
 rendom.txt
-config*
 scraper.log
 test.py
-torob/
+
+# فایل‌های کانفیگ (به جز کانفیگ اصلی)
+config.*
+!config.json
+# یا اگر کانفیگ اصلی‌تان نام دیگری دارد:
+# !config.main.json
+
+# فایل‌های مربوط به Chrome Driver
 chrome*
+chromedriver*
+
+# فایل‌های لاگ
+*.log
