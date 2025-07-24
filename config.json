@@ -1,5 +1,5 @@
 {
-  "main_page_url": "https://torob.com/shop/207058/%D8%B3%D8%A7%D8%AE%D8%AA%D9%85%D8%A7%D9%86-%DA%A9%D9%84%DB%8C%D9%86%DB%8C%DA%A9/%D9%85%D8%AD%D8%B5%D9%88%D9%84%D8%A7%D8%AA/",
+  "main_page_url": "https://torob.com/shop/197117/%D9%82%D8%B3%D8%B7%DB%8C-%D8%AC%D8%A7%D9%86%D8%A8%DB%8C/%D9%85%D8%AD%D8%B5%D9%88%D9%84%D8%A7%D8%AA/",
   "selectors": {
     "product_links": ".ProductCards_cards__MYvdn > div > a",
     "product_title": ".Showcase_name__hrttI > h1:nth-child(1)",
@@ -18,11 +18,11 @@
       "spec_value": "div.key-specs-container > div:nth-child(2), .sub-section > div > div:nth-child(2)"
     }
   },
-  "scroll_count": 5,
+  "scroll_count": 4,
   "delays": {
     "page_load": 2.0,
-    "scroll_delay": 1.5,
-    "between_products": 0.5,
+    "scroll_delay": 1.2,
+    "between_products": 0.2,
     "element_interaction": 0.2
   },
   "browser_settings": {
@@ -37,11 +37,11 @@
   "performance": {
     "concurrent_tabs": 2,
     "max_wait_time": 5,
-    "retry_attempts": 2,
+    "retry_attempts": 3,
     "cache_enabled": true
   },
   "output": {
-    "filename": "1738504253.json",
+    "filename": "/var/www/torob_bot/storage/app/1738504582.json",
     "format": "json"
   }
-}
+} 

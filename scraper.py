@@ -8,6 +8,9 @@ import random
 import platform
 import subprocess
 import re
+import threading
+import queue
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Optional
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -33,6 +36,7 @@ class ProductScraper:
         self.config = self.load_config(config_path)
         self.driver = None
         self.scraped_products = []
+        self.tab_handles = []  # اضافه شده برای نگهداری handle های تب‌ها 
         self.setup_logging()
         
     def setup_logging(self):
@@ -217,6 +221,10 @@ class ProductScraper:
             chrome_options.add_argument('--disable-extensions')
             chrome_options.add_argument('--disable-plugins')
             chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+            chrome_options.add_argument('--max_old_space_size=4096')
+            chrome_options.add_argument('--disable-background-timer-throttling')
+            chrome_options.add_argument('--disable-renderer-backgrounding')
+
             
             random_user_agent = self.get_random_user_agent()
             chrome_options.add_argument(f'--user-agent={random_user_agent}')
@@ -539,6 +547,326 @@ class ProductScraper:
             self.driver.quit()
             self.logger.info("🔒 مرورگر بسته شد")
 
+    def setup_multiple_tabs(self, num_tabs: int = 2):
+        """
+        راه‌اندازی چندین تب برای پردازش موازی
+        """
+        try:
+            self.logger.info(f"🔄 راه‌اندازی {num_tabs} تب برای پردازش موازی...")
+            
+            # باز کردن تب‌های اضافی
+            for i in range(num_tabs - 1):
+                self.driver.execute_script("window.open('about:blank', '_blank');")
+                self.human_like_delay(0.3, 0.5)
+            
+            # دریافت handle های تمام تب‌ها
+            self.tab_handles = self.driver.window_handles
+            self.logger.info(f"✅ {len(self.tab_handles)} تب آماده شد")
+            
+            return self.tab_handles
+            
+        except Exception as e:
+            self.logger.error(f"❌ خطا در راه‌اندازی چندین تب: {e}")
+            return [self.driver.current_window_handle]
+
+    def extract_product_data_in_tab(self, product_url: str, tab_handle: str) -> Optional[Dict]:
+        """
+        استخراج اطلاعات محصول در تب مشخص
+        """
+        try:
+            # تغییر به تب مشخص
+            self.driver.switch_to.window(tab_handle)
+            
+            self.logger.info(f"📊 استخراج اطلاعات محصول در تب: {product_url}")
+            self.driver.get(product_url)
+            self.human_like_delay(1.5, 2.5)
+            self.driver.execute_script("window.scrollTo(0, 500);")
+            self.human_like_delay(0.5, 1)
+            
+            product_data = {
+                'url': product_url,
+                'title': None,
+                'categories': [],
+                'brand': None,
+                'specifications': {
+                    'key_specs': [],
+                    'general_specs': []
+                }
+            }
+            
+            # استخراج عنوان محصول
+            try:
+                title_element = WebDriverWait(self.driver, 6).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, self.config['selectors']['product_title']))
+                )
+                product_data['title'] = title_element.text.strip()
+                self.logger.info(f"📝 عنوان محصول: {product_data['title']}")
+            except TimeoutException:
+                self.logger.warning(f"⚠️ عنوان محصول یافت نشد: {product_url}")
+                
+            # استخراج دسته‌بندی‌ها
+            categories_selectors = self.config['selectors']['categories']
+            categories_found = []
+            for i, selector in enumerate(categories_selectors):
+                try:
+                    category_element = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    category_text = category_element.text.strip()
+                    if category_text:
+                        categories_found.append({
+                            'level': i + 1,
+                            'name': category_text
+                        })
+                        self.logger.info(f"🏷️ دسته‌بندی {i+1}: {category_text}")
+                except NoSuchElementException:
+                    break
+                except Exception as e:
+                    self.logger.warning(f"⚠️ خطا در استخراج دسته‌بندی {i+1}: {e}")
+            
+            # تشخیص برند از دسته‌بندی
+            if categories_found:
+                last_category = categories_found[-1]
+                brand = self.detect_brand_from_category(last_category['name'])
+                if brand:
+                    product_data['brand'] = brand
+                    product_data['categories'] = categories_found[:-1]
+                    self.logger.info(f"🏷️ برند استخراج شد: {brand}")
+                else:
+                    product_data['categories'] = categories_found
+            
+            # استخراج مشخصات
+            self.logger.info("🔍 شروع استخراج مشخصات...")
+            specifications = self.extract_specifications(product_url)
+            product_data['specifications'] = specifications
+            self.logger.info(f"✅ تعداد مشخصات کلیدی: {len(specifications['key_specs'])}")
+            self.logger.info(f"✅ تعداد مشخصات کلی: {len(specifications['general_specs'])}")
+            
+            self.human_like_delay(0.3, 0.8)
+            return product_data
+            
+        except Exception as e:
+            self.logger.error(f"❌ خطا در استخراج اطلاعات محصول {product_url}: {e}")
+            return None
+
+    def process_single_product_thread(self, product_url: str, tab_handle: str, thread_id: int, results_queue: queue.Queue):
+        """
+        پردازش یک محصول در thread جداگانه
+        """
+        try:
+            # تاخیر کوچک برای جلوگیری از تداخل و کاهش فشار connection pool
+            time.sleep(thread_id * 0.5)
+            
+            # تغییر به تب مشخص
+            self.driver.switch_to.window(tab_handle)
+            
+            self.logger.info(f"📊 Thread {thread_id}: شروع استخراج {product_url}")
+            product_data = self.extract_product_data_in_tab(product_url, tab_handle)
+            
+            # قرار دادن نتیجه در صف
+            results_queue.put({
+                'thread_id': thread_id,
+                'product_data': product_data,
+                'success': product_data is not None
+            })
+            
+            self.logger.info(f"✅ Thread {thread_id}: تکمیل شد")
+            
+        except Exception as e:
+            self.logger.error(f"❌ Thread {thread_id} خطا: {e}")
+            results_queue.put({
+                'thread_id': thread_id,
+                'product_data': None,
+                'success': False
+            })
+
+    def process_products_parallel(self, product_links: List[str], num_tabs: int = 2):
+        """
+        پردازش واقعاً موازی محصولات با استفاده از threading
+        """
+        try:
+            # راه‌اندازی تب‌های متعدد
+            tab_handles = self.setup_multiple_tabs(num_tabs)
+            total_products = len(product_links)
+            processed_count = 0
+            
+            self.logger.info(f"🚀 شروع پردازش همزمان {total_products} محصول با {len(tab_handles)} تب")
+            
+            # پردازش محصولات به صورت batch های ۳ تایی همزمان
+            for batch_start in range(0, total_products, num_tabs):
+                batch_end = min(batch_start + num_tabs, total_products)
+                current_batch = product_links[batch_start:batch_end]
+                
+                print(f"\n📦 شروع پردازش همزمان batch {batch_start//num_tabs + 1}: محصولات {batch_start + 1} تا {batch_end}")
+                
+                # ایجاد صف برای نتایج
+                results_queue = queue.Queue()
+                threads = []
+                
+                # شروع thread ها برای پردازش همزمان
+                for i, product_url in enumerate(current_batch):
+                    if i < len(tab_handles):
+                        tab_handle = tab_handles[i]
+                        processed_count += 1
+                        
+                        print(f"🔄 شروع همزمان محصول {processed_count} از {total_products} در تب {i+1}")
+                        
+                        # ایجاد و شروع thread
+                        thread = threading.Thread(
+                            target=self.process_single_product_thread,
+                            args=(product_url, tab_handle, i+1, results_queue)
+                        )
+                        thread.daemon = True
+                        thread.start()
+                        threads.append(thread)
+                
+                # انتظار برای تکمیل همه thread ها
+                for thread in threads:
+                    thread.join()
+                
+                # جمع‌آوری نتایج از صف
+                batch_results = []
+                while not results_queue.empty():
+                    result = results_queue.get()
+                    if result['success'] and result['product_data']:
+                        batch_results.append(result['product_data'])
+                        self.scraped_products.append(result['product_data'])
+                        self.logger.info(f"✅ Thread {result['thread_id']}: داده محصول ذخیره شد")
+                
+                print(f"🎉 batch تکمیل شد - {len(batch_results)} محصول موفق از {len(current_batch)}")
+                
+                # تاخیر بین batch ها برای جلوگیری از بلاک شدن
+                if batch_end < total_products:
+                    batch_delay = random.uniform(3, 5)
+                    self.logger.info(f"⏱️ انتظار {batch_delay:.1f} ثانیه قبل از batch بعدی...")
+                    time.sleep(batch_delay)
+            
+            # بازگشت به تب اصلی
+            self.driver.switch_to.window(tab_handles[0])
+            self.logger.info("✅ پردازش همزمان تمام محصولات تکمیل شد")
+            
+        except Exception as e:
+            self.logger.error(f"❌ خطا در پردازش همزمان محصولات: {e}")
+
+    def run_parallel(self):
+        """
+        اجرای اصلی ربات با پردازش موازی - نسخه بهبود یافته
+        """
+        try:
+            print("🚀 شروع اجرای ربات اسکرپینگ موازی...")
+            self.setup_driver()
+            product_links = self.extract_product_links()
+            
+            if not product_links:
+                self.logger.error("❌ هیچ لینک محصولی یافت نشد")
+                return
+                
+            # نمایش تعداد کل محصولات
+            total_products_count = len(product_links)
+            print(f"\n📊 تعداد کل محصولات یافت شده: {total_products_count}")
+            print(f"🎯 شروع فرآیند استخراج اطلاعات...")
+            print("=" * 60)
+            
+            # راه‌اندازی تب‌های متعدد
+            num_tabs = 2
+            tab_handles = self.setup_multiple_tabs(num_tabs)
+            processed_count = 0
+            
+            self.logger.info(f"🚀 شروع پردازش همزمان {total_products_count} محصول با {len(tab_handles)} تب")
+            
+            # پردازش محصولات به صورت batch های موازی
+            for batch_start in range(0, total_products_count, num_tabs):
+                batch_end = min(batch_start + num_tabs, total_products_count)
+                current_batch = product_links[batch_start:batch_end]
+                
+                batch_number = batch_start // num_tabs + 1
+                total_batches = (total_products_count + num_tabs - 1) // num_tabs
+                
+                print(f"\n📦 Batch {batch_number} از {total_batches}")
+                print(f"🔄 پردازش همزمان محصولات {batch_start + 1} تا {batch_end} از {total_products_count}")
+                
+                # ایجاد صف برای نتایج
+                results_queue = queue.Queue()
+                threads = []
+                
+                # شروع thread ها برای پردازش همزمان
+                for i, product_url in enumerate(current_batch):
+                    if i < len(tab_handles):
+                        tab_handle = tab_handles[i]
+                        current_product_number = batch_start + i + 1
+                        
+                        print(f"   🔄 تب {i+1}: شروع استخراج محصول {current_product_number} از {total_products_count}")
+                        
+                            # ایجاد و شروع thread
+                        thread = threading.Thread(
+                                target=self.process_single_product_thread,
+                                args=(product_url, tab_handle, current_product_number, results_queue)
+                        )
+                        thread.daemon = True
+                        thread.start()
+                        threads.append(thread)
+                
+                # انتظار برای تکمیل همه thread ها
+                for thread in threads:
+                    thread.join()
+                
+                # جمع‌آوری نتایج از صف
+                batch_results = []
+                successful_in_batch = 0
+                
+                while not results_queue.empty():
+                    result = results_queue.get()
+                    if result['success'] and result['product_data']:
+                        batch_results.append(result['product_data'])
+                        self.scraped_products.append(result['product_data'])
+                        successful_in_batch += 1
+                        processed_count += 1
+                        print(f"   ✅ محصول {result['thread_id']} : استخراج موفق ({processed_count} از {total_products_count})")
+                    else:
+                        processed_count += 1
+                        print(f"   ❌ محصول {result['thread_id']} : استخراج ناموفق ({processed_count} از {total_products_count})")
+                
+                # نمایش آمار batch
+                failed_in_batch = len(current_batch) - successful_in_batch
+                completion_percentage = (processed_count / total_products_count) * 100
+                
+                print(f"🎉 Batch {batch_number} تکمیل شد:")
+                print(f"   ✅ موفق: {successful_in_batch}")
+                print(f"   ❌ ناموفق: {failed_in_batch}")
+                print(f"   📈 پیشرفت کلی: {completion_percentage:.1f}% ({processed_count}/{total_products_count})")
+                
+                # تاخیر بین batch ها
+                if batch_end < total_products_count:
+                    batch_delay = random.uniform(3, 5)
+                    remaining_products = total_products_count - processed_count
+                    print(f"⏱️ انتظار {batch_delay:.1f} ثانیه قبل از batch بعدی ({remaining_products} محصول باقی‌مانده)...")
+                    time.sleep(batch_delay)
+            
+            # نمایش آمار نهایی
+            successful_total = len([p for p in self.scraped_products if p.get('title')])
+            failed_total = total_products_count - successful_total
+            
+            print(f"\n🏁 فرآیند استخراج تکمیل شد!")
+            print(f"📊 آمار نهایی:")
+            print(f"   🔢 تعداد کل محصولات: {total_products_count}")
+            print(f"   ✅ استخراج موفق: {successful_total}")
+            print(f"   ❌ استخراج ناموفق: {failed_total}")
+            print(f"   📈 درصد موفقیت: {(successful_total/total_products_count)*100:.1f}%")
+            
+            # بازگشت به تب اصلی
+            self.driver.switch_to.window(tab_handles[0])
+            
+            # ذخیره داده‌ها
+            self.save_data()
+            print("\n🎉 ربات موازی با موفقیت کار خود را تمام کرد!")
+            
+        except KeyboardInterrupt:
+            self.logger.info("⏹️ ربات توسط کاربر متوقف شد")
+            print(f"\n⏹️ ربات متوقف شد - تا این لحظه {len(self.scraped_products)} محصول استخراج شده بود")
+        except Exception as e:
+            self.logger.error(f"❌ خطای کلی در اجرای ربات موازی: {e}")
+        finally:
+            self.cleanup()
+
+
 def main():
     """
     تابع اصلی برنامه
@@ -554,7 +882,7 @@ def main():
         return
         
     scraper = ProductScraper(config_file)
-    scraper.run()
+    scraper.run_parallel()
 
 if __name__ == "__main__":
     main()
